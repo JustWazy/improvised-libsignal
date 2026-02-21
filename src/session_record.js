@@ -4,6 +4,7 @@ const BaseKeyType = require('./base_key_type');
 
 const CLOSED_SESSIONS_MAX = 40;
 const OPEN_SESSIONS_MAX = 5;
+const OPEN_SESSION_MAX_AGE = 3 * 60 * 1000;
 const SESSION_RECORD_VERSION = 'v1';
 
 function assertBuffer(value) {
@@ -256,6 +257,7 @@ class SessionRecord {
     }
 
     getOpenSession() {
+        this.closeExpiredSessions();
         let latest;
         for (const session of Object.values(this.sessions)) {
             if (this.isClosed(session)) {
@@ -269,12 +271,14 @@ class SessionRecord {
     }
 
     setSession(session) {
+        this.closeExpiredSessions();
         session.indexInfo.used = Date.now();
         this.sessions[session.indexInfo.baseKey.toString('base64')] = session;
         this.removeExtraOpenSessions(session);
     }
 
     getSessions() {
+        this.closeExpiredSessions();
         // Return sessions ordered with most recently used first.
         return Array.from(Object.values(this.sessions)).sort((a, b) => {
             const aUsed = a.indexInfo.used || 0;
@@ -293,6 +297,7 @@ class SessionRecord {
     }
 
     openSession(session) {
+        this.closeExpiredSessions();
         if (!this.isClosed(session)) {
             console.warn("Session already open");
         }
@@ -304,6 +309,18 @@ class SessionRecord {
 
     isClosed(session) {
         return session.indexInfo.closed !== -1;
+    }
+
+    closeExpiredSessions(now = Date.now()) {
+        for (const session of Object.values(this.sessions)) {
+            if (this.isClosed(session)) {
+                continue;
+            }
+            const usedAt = session.indexInfo.used || session.indexInfo.created || 0;
+            if ((now - usedAt) > OPEN_SESSION_MAX_AGE) {
+                this.closeSession(session);
+            }
+        }
     }
 
     removeOldSessions() {
