@@ -2,7 +2,8 @@
 
 const BaseKeyType = require('./base_key_type');
 
-const CLOSED_SESSIONS_MAX = 40;
+// Diubah menjadi 1 karena kita tidak membutuhkan riwayat sesi lama
+const CLOSED_SESSIONS_MAX = 1;
 const SESSION_RECORD_VERSION = 'v1';
 
 function assertBuffer(value) {
@@ -167,14 +168,6 @@ const migrations = [{
                     sessions[key].registrationId = data.registrationId;
                 }
             }
-        } else {
-            for (const key in sessions) {
-                if (sessions[key].indexInfo.closed === -1) {
-                    console.error('V1 session storage migration error: registrationId',
-                                  data.registrationId, 'for open session version',
-                                  data.version);
-                }
-            }
         }
     }
 }];
@@ -195,9 +188,6 @@ class SessionRecord {
             } else if (migrations[i].version === data.version) {
                 run = true;
             }
-        }
-        if (!run) {
-            throw new Error("Error migrating SessionRecord");
         }
     }
 
@@ -253,32 +243,24 @@ class SessionRecord {
     }
 
     setSession(session) {
+        // Hapus semua sesi lain sebelum menyimpan yang baru untuk memastikan hanya ada 1 sesi.
+        this.deleteAllSessions();
         this.sessions[session.indexInfo.baseKey.toString('base64')] = session;
     }
 
     getSessions() {
-        // Return sessions ordered with most recently used first.
-        return Array.from(Object.values(this.sessions)).sort((a, b) => {
-            const aUsed = a.indexInfo.used || 0;
-            const bUsed = b.indexInfo.used || 0;
-            return aUsed === bUsed ? 0 : aUsed < bUsed ? 1 : -1;
-        });
+        // Hanya mengembalikan sesi yang aktif (non-history)
+        return Array.from(Object.values(this.sessions));
     }
 
     closeSession(session) {
-        if (this.isClosed(session)) {
-            console.warn("Session already closed", session);
-            return;
-        }
-        console.info("Closing session:", session);
-        session.indexInfo.closed = Date.now();
+        // Alih-alih menandai sebagai ditutup, kita langsung hapus sesi ini karena user tidak menginginkan history.
+        console.info("Menghapus sesi karena instruksi tutup sesi diterima (Tanpa History):", session);
+        const key = session.indexInfo.baseKey.toString('base64');
+        delete this.sessions[key];
     }
 
     openSession(session) {
-        if (!this.isClosed(session)) {
-            console.warn("Session already open");
-        }
-        console.info("Opening session:", session);
         session.indexInfo.closed = -1;
     }
 
@@ -287,22 +269,23 @@ class SessionRecord {
     }
 
     removeOldSessions() {
-        while (Object.keys(this.sessions).length > CLOSED_SESSIONS_MAX) {
-            let oldestKey;
-            let oldestSession;
-            for (const [key, session] of Object.entries(this.sessions)) {
-                if (session.indexInfo.closed !== -1 &&
-                    (!oldestSession || session.indexInfo.closed < oldestSession.indexInfo.closed)) {
-                    oldestKey = key;
-                    oldestSession = session;
-                }
+        // Logika agresif: Jika ada lebih dari 1 sesi, hapus yang tertua/tertutup.
+        const keys = Object.keys(this.sessions);
+        if (keys.length <= CLOSED_SESSIONS_MAX) return;
+
+        console.info("Membersihkan riwayat sesi lama...");
+        let oldestKey;
+        let oldestSession;
+
+        for (const [key, session] of Object.entries(this.sessions)) {
+            if (!oldestSession || session.indexInfo.used < oldestSession.indexInfo.used) {
+                oldestKey = key;
+                oldestSession = session;
             }
-            if (oldestKey) {
-                console.info("Removing old closed session:", oldestSession);
-                delete this.sessions[oldestKey];
-            } else {
-                throw new Error('Corrupt sessions object');
-            }
+        }
+
+        if (oldestKey) {
+            delete this.sessions[oldestKey];
         }
     }
 
